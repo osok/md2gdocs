@@ -271,39 +271,67 @@ class MarkdownToGoogleDocs:
         print(f"Created document with ID: {doc_id}")
         
         # Build requests for updating the document
-        # All requests will insert at index 1, and we'll reverse them
-        # so they appear in the correct order
-        requests = []
+        # First pass: insert all content
+        # Second pass: apply formatting with correct indices
+        insert_requests = []
+        format_requests = []
+        current_index = 1
 
         for block in blocks:
             if block['type'] == 'markdown':
                 # Convert markdown to plain text with basic formatting
                 text = self._markdown_to_text(block['content'])
-                requests.append({
+                insert_requests.append({
                     'insertText': {
-                        'location': {'index': 1},
+                        'location': {'index': current_index},
                         'text': text + '\n'
                     }
                 })
+                current_index += len(text) + 1
 
             elif block['type'] == 'code':
                 # Insert code block with professional formatting
                 code_text = f"\n{block['content']}\n"
 
-                # 1. Insert the code text (without backticks)
-                requests.append({
+                # Record the start position for this code block
+                code_start = current_index
+                code_end = current_index + len(code_text)
+
+                insert_requests.append({
                     'insertText': {
-                        'location': {'index': 1},
+                        'location': {'index': current_index},
                         'text': code_text
                     }
                 })
 
-                # 2. Apply text formatting (monospace font + background)
-                requests.append({
+                # Build border style
+                border_style = {
+                    'color': {
+                        'color': {
+                            'rgbColor': {
+                                'red': 0.0,
+                                'green': 0.0,
+                                'blue': 0.0
+                            }
+                        }
+                    },
+                    'width': {
+                        'magnitude': 1.0,
+                        'unit': 'PT'
+                    },
+                    'padding': {
+                        'magnitude': 10.0,
+                        'unit': 'PT'
+                    },
+                    'dashStyle': 'SOLID'
+                }
+
+                # Apply text formatting (monospace font + background)
+                format_requests.append({
                     'updateTextStyle': {
                         'range': {
-                            'startIndex': 1,
-                            'endIndex': 1 + len(code_text)
+                            'startIndex': code_start,
+                            'endIndex': code_end
                         },
                         'textStyle': {
                             'weightedFontFamily': {
@@ -327,38 +355,35 @@ class MarkdownToGoogleDocs:
                     }
                 })
 
-                # 3. Apply paragraph formatting (left border for visual distinction)
-                requests.append({
+                # Apply paragraph formatting (full box with black border and grey background)
+                format_requests.append({
                     'updateParagraphStyle': {
                         'range': {
-                            'startIndex': 1,
-                            'endIndex': 1 + len(code_text)
+                            'startIndex': code_start,
+                            'endIndex': code_end
                         },
                         'paragraphStyle': {
-                            'borderLeft': {
-                                'color': {
+                            'borderTop': border_style,
+                            'borderBottom': border_style,
+                            'borderLeft': border_style,
+                            'borderRight': border_style,
+                            'shading': {
+                                'backgroundColor': {
                                     'color': {
                                         'rgbColor': {
-                                            'red': 0.6,
-                                            'green': 0.6,
-                                            'blue': 0.6
+                                            'red': 0.95,
+                                            'green': 0.95,
+                                            'blue': 0.95
                                         }
                                     }
-                                },
-                                'width': {
-                                    'magnitude': 3.0,
-                                    'unit': 'PT'
-                                },
-                                'padding': {
-                                    'magnitude': 10.0,
-                                    'unit': 'PT'
-                                },
-                                'dashStyle': 'SOLID'
+                                }
                             }
                         },
-                        'fields': 'borderLeft'
+                        'fields': 'borderTop,borderBottom,borderLeft,borderRight,shading'
                     }
                 })
+
+                current_index += len(code_text)
 
             elif block['type'] == 'mermaid':
                 # Insert mermaid diagram image
@@ -368,9 +393,9 @@ class MarkdownToGoogleDocs:
                     image_id = self.upload_image_to_drive(image_path, drive_service)
 
                     # Insert image into document
-                    requests.append({
+                    insert_requests.append({
                         'insertInlineImage': {
-                            'location': {'index': 1},
+                            'location': {'index': current_index},
                             'uri': f"https://drive.google.com/uc?id={image_id}",
                             'objectSize': {
                                 'height': {'magnitude': 300, 'unit': 'PT'},
@@ -378,20 +403,30 @@ class MarkdownToGoogleDocs:
                             }
                         }
                     })
+                    current_index += 1
 
                     # Add spacing after image
-                    requests.append({
+                    insert_requests.append({
                         'insertText': {
-                            'location': {'index': 1},
+                            'location': {'index': current_index},
                             'text': '\n\n'
                         }
                     })
-        
-        # Execute all requests
-        if requests:
+                    current_index += 2
+
+        # Execute requests in two batches:
+        # Batch 1: Insert all content
+        if insert_requests:
             docs_service.documents().batchUpdate(
                 documentId=doc_id,
-                body={'requests': requests[::-1]}  # Reverse to maintain indices
+                body={'requests': insert_requests}
+            ).execute()
+
+        # Batch 2: Apply formatting (after all text is inserted)
+        if format_requests:
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': format_requests}
             ).execute()
         
         return doc_id
