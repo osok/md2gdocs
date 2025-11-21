@@ -287,12 +287,76 @@ class MarkdownToGoogleDocs:
                 })
 
             elif block['type'] == 'code':
-                # Insert code block
-                code_text = f"\n```{block['language']}\n{block['content']}\n```\n"
+                # Insert code block with professional formatting
+                code_text = f"\n{block['content']}\n"
+
+                # 1. Insert the code text (without backticks)
                 requests.append({
                     'insertText': {
                         'location': {'index': 1},
                         'text': code_text
+                    }
+                })
+
+                # 2. Apply text formatting (monospace font + background)
+                requests.append({
+                    'updateTextStyle': {
+                        'range': {
+                            'startIndex': 1,
+                            'endIndex': 1 + len(code_text)
+                        },
+                        'textStyle': {
+                            'weightedFontFamily': {
+                                'fontFamily': 'Courier New'
+                            },
+                            'fontSize': {
+                                'magnitude': 10,
+                                'unit': 'PT'
+                            },
+                            'backgroundColor': {
+                                'color': {
+                                    'rgbColor': {
+                                        'red': 0.95,
+                                        'green': 0.95,
+                                        'blue': 0.95
+                                    }
+                                }
+                            }
+                        },
+                        'fields': 'weightedFontFamily,fontSize,backgroundColor'
+                    }
+                })
+
+                # 3. Apply paragraph formatting (left border for visual distinction)
+                requests.append({
+                    'updateParagraphStyle': {
+                        'range': {
+                            'startIndex': 1,
+                            'endIndex': 1 + len(code_text)
+                        },
+                        'paragraphStyle': {
+                            'borderLeft': {
+                                'color': {
+                                    'color': {
+                                        'rgbColor': {
+                                            'red': 0.6,
+                                            'green': 0.6,
+                                            'blue': 0.6
+                                        }
+                                    }
+                                },
+                                'width': {
+                                    'magnitude': 3.0,
+                                    'unit': 'PT'
+                                },
+                                'padding': {
+                                    'magnitude': 10.0,
+                                    'unit': 'PT'
+                                },
+                                'dashStyle': 'SOLID'
+                            }
+                        },
+                        'fields': 'borderLeft'
                     }
                 })
 
