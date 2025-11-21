@@ -271,43 +271,42 @@ class MarkdownToGoogleDocs:
         print(f"Created document with ID: {doc_id}")
         
         # Build requests for updating the document
+        # All requests will insert at index 1, and we'll reverse them
+        # so they appear in the correct order
         requests = []
-        current_index = 1  # Google Docs indices start at 1
-        
+
         for block in blocks:
             if block['type'] == 'markdown':
                 # Convert markdown to plain text with basic formatting
                 text = self._markdown_to_text(block['content'])
                 requests.append({
                     'insertText': {
-                        'location': {'index': current_index},
+                        'location': {'index': 1},
                         'text': text + '\n'
                     }
                 })
-                current_index += len(text) + 1
-                
+
             elif block['type'] == 'code':
                 # Insert code block
                 code_text = f"\n```{block['language']}\n{block['content']}\n```\n"
                 requests.append({
                     'insertText': {
-                        'location': {'index': current_index},
+                        'location': {'index': 1},
                         'text': code_text
                     }
                 })
-                current_index += len(code_text)
-                
+
             elif block['type'] == 'mermaid':
                 # Insert mermaid diagram image
                 image_path = mermaid_images[block['index']]
                 if os.path.exists(image_path):
                     # Upload image to Drive
                     image_id = self.upload_image_to_drive(image_path, drive_service)
-                    
+
                     # Insert image into document
                     requests.append({
                         'insertInlineImage': {
-                            'location': {'index': current_index},
+                            'location': {'index': 1},
                             'uri': f"https://drive.google.com/uc?id={image_id}",
                             'objectSize': {
                                 'height': {'magnitude': 300, 'unit': 'PT'},
@@ -315,16 +314,14 @@ class MarkdownToGoogleDocs:
                             }
                         }
                     })
-                    current_index += 1
-                    
+
                     # Add spacing after image
                     requests.append({
                         'insertText': {
-                            'location': {'index': current_index},
+                            'location': {'index': 1},
                             'text': '\n\n'
                         }
                     })
-                    current_index += 2
         
         # Execute all requests
         if requests:
