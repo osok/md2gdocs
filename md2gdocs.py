@@ -87,26 +87,43 @@ class MermaidRenderer:
             return self._render_with_cli(mermaid_code, output_path)
     
     def _render_with_api(self, mermaid_code: str, output_path: str) -> bool:
-        """Render using mermaid.ink API."""
-        try:
-            # Encode the mermaid code for the API
-            encoded = base64.urlsafe_b64encode(
-                mermaid_code.encode('utf-8')
-            ).decode('ascii')
-            
-            # Request the image from mermaid.ink
-            url = f"https://mermaid.ink/img/{encoded}"
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            
-            # Save the image
-            with open(output_path, 'wb') as f:
-                f.write(response.content)
-            
-            return True
-        except Exception as e:
-            print(f"Error rendering mermaid diagram with API: {e}")
-            return False
+        """Render using mermaid.ink API with retry logic."""
+        import time
+
+        max_retries = 3
+        retry_delay = 2  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                # Encode the mermaid code for the API
+                encoded = base64.urlsafe_b64encode(
+                    mermaid_code.encode('utf-8')
+                ).decode('ascii')
+
+                # Request the image from mermaid.ink
+                url = f"https://mermaid.ink/img/{encoded}"
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+
+                # Save the image
+                with open(output_path, 'wb') as f:
+                    f.write(response.content)
+
+                return True
+            except requests.exceptions.HTTPError as e:
+                if attempt < max_retries - 1 and e.response.status_code in [503, 429, 500]:
+                    # Retry on server errors or rate limiting
+                    print(f"Mermaid API error (attempt {attempt + 1}/{max_retries}): {e.response.status_code}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    print(f"Error rendering mermaid diagram with API: {e}")
+                    return False
+            except Exception as e:
+                print(f"Error rendering mermaid diagram with API: {e}")
+                return False
+
+        return False
     
     def _render_with_cli(self, mermaid_code: str, output_path: str) -> bool:
         """Render using local mermaid CLI."""
@@ -279,15 +296,19 @@ class MarkdownToGoogleDocs:
 
         for block in blocks:
             if block['type'] == 'markdown':
-                # Convert markdown to plain text with basic formatting
-                text = self._markdown_to_text(block['content'])
+                # Parse markdown with formatting
+                text = self._parse_markdown_with_formatting(
+                    block['content'],
+                    current_index,
+                    format_requests
+                )
                 insert_requests.append({
                     'insertText': {
                         'location': {'index': current_index},
-                        'text': text + '\n'
+                        'text': text
                     }
                 })
-                current_index += len(text) + 1
+                current_index += len(text)
 
             elif block['type'] == 'code':
                 # Insert code block with professional formatting
@@ -431,61 +452,185 @@ class MarkdownToGoogleDocs:
         
         return doc_id
     
-    def _markdown_to_text(self, markdown_text: str) -> str:
+    def _parse_markdown_with_formatting(self, markdown_text: str, start_index: int, format_requests: list):
         """
-        Convert markdown to plain text with basic formatting.
-        
+        Parse markdown and generate formatting requests for Google Docs.
+
         Args:
-            markdown_text: Markdown content
-            
+            markdown_text: Markdown content to parse
+            start_index: Starting index in the document
+            format_requests: List to append formatting requests to
+
         Returns:
-            Plain text version
+            Plain text version with formatting tracked
         """
-        # Simple conversion - you can enhance this
-        text = markdown_text
-        
-        # Convert headers
-        text = re.sub(r'^#{1,6}\s+(.+)$', r'\1', text, flags=re.MULTILINE)
-        
-        # Convert bold
+        result_text = ""
+        current_pos = start_index
+
+        lines = markdown_text.split('\n')
+
+        for line in lines:
+            line_start = current_pos
+
+            # Handle headers (# through ######)
+            header_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+            if header_match:
+                level = len(header_match.group(1))
+                text = header_match.group(2)
+
+                # Remove markdown symbols from text
+                clean_text = self._remove_inline_markdown(text)
+                result_text += clean_text + '\n'
+
+                # Apply header formatting
+                font_size = max(24 - (level * 2), 12)  # H1=24pt, H2=22pt, etc.
+                format_requests.append({
+                    'updateTextStyle': {
+                        'range': {
+                            'startIndex': line_start,
+                            'endIndex': line_start + len(clean_text)
+                        },
+                        'textStyle': {
+                            'fontSize': {
+                                'magnitude': font_size,
+                                'unit': 'PT'
+                            },
+                            'bold': True
+                        },
+                        'fields': 'fontSize,bold'
+                    }
+                })
+
+                # Add inline formatting (bold, italic) within headers
+                self._apply_inline_formatting(text, line_start, format_requests)
+
+                current_pos += len(clean_text) + 1
+                continue
+
+            # Handle list items
+            list_match = re.match(r'^(\s*)[\*\-]\s+(.+)$', line)
+            if list_match:
+                indent = list_match.group(1)
+                text = list_match.group(2)
+                clean_text = self._remove_inline_markdown(text)
+
+                # Add bullet with proper indentation
+                indent_spaces = '  ' * (len(indent) // 2)
+                formatted_line = f"{indent_spaces}• {clean_text}\n"
+                result_text += formatted_line
+
+                # Apply inline formatting
+                self._apply_inline_formatting(text, line_start + len(indent_spaces) + 2, format_requests)
+
+                current_pos += len(formatted_line)
+                continue
+
+            # Handle numbered lists
+            num_list_match = re.match(r'^(\s*)(\d+)\.\s+(.+)$', line)
+            if num_list_match:
+                indent = num_list_match.group(1)
+                num = num_list_match.group(2)
+                text = num_list_match.group(3)
+                clean_text = self._remove_inline_markdown(text)
+
+                indent_spaces = '  ' * (len(indent) // 2)
+                formatted_line = f"{indent_spaces}{num}. {clean_text}\n"
+                result_text += formatted_line
+
+                self._apply_inline_formatting(text, line_start + len(indent_spaces) + len(num) + 2, format_requests)
+
+                current_pos += len(formatted_line)
+                continue
+
+            # Regular line - apply inline formatting
+            if line.strip():
+                clean_text = self._remove_inline_markdown(line)
+                result_text += clean_text + '\n'
+                self._apply_inline_formatting(line, line_start, format_requests)
+                current_pos += len(clean_text) + 1
+            else:
+                result_text += '\n'
+                current_pos += 1
+
+        return result_text
+
+    def _remove_inline_markdown(self, text: str) -> str:
+        """Remove markdown syntax from text while preserving content."""
+        # Remove bold
         text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         text = re.sub(r'__(.+?)__', r'\1', text)
-        
-        # Convert italic
+
+        # Remove italic
         text = re.sub(r'\*(.+?)\*', r'\1', text)
         text = re.sub(r'_(.+?)_', r'\1', text)
-        
+
         # Convert links
-        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1 (\2)', text)
-        
-        # Convert lists
-        text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
-        text = re.sub(r'^\-\s+', '• ', text, flags=re.MULTILINE)
-        text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
-        
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1', text)
+
         return text
+
+    def _apply_inline_formatting(self, text: str, start_pos: int, format_requests: list):
+        """Apply bold and italic formatting within a line of text."""
+        # Find bold text (**text** or __text__)
+        for match in re.finditer(r'\*\*(.+?)\*\*|__(.+?)__', text):
+            bold_text = match.group(1) or match.group(2)
+            # Calculate position in cleaned text
+            prefix = self._remove_inline_markdown(text[:match.start()])
+            pos = start_pos + len(prefix)
+
+            format_requests.append({
+                'updateTextStyle': {
+                    'range': {
+                        'startIndex': pos,
+                        'endIndex': pos + len(bold_text)
+                    },
+                    'textStyle': {
+                        'bold': True
+                    },
+                    'fields': 'bold'
+                }
+            })
+
+        # Find italic text (*text* or _text_) - but not bold
+        for match in re.finditer(r'(?<!\*)\*([^\*]+?)\*(?!\*)|(?<!_)_([^_]+?)_(?!_)', text):
+            italic_text = match.group(1) or match.group(2)
+            prefix = self._remove_inline_markdown(text[:match.start()])
+            pos = start_pos + len(prefix)
+
+            format_requests.append({
+                'updateTextStyle': {
+                    'range': {
+                        'startIndex': pos,
+                        'endIndex': pos + len(italic_text)
+                    },
+                    'textStyle': {
+                        'italic': True
+                    },
+                    'fields': 'italic'
+                }
+            })
     
     def convert(self, markdown_file: str, doc_title: Optional[str] = None) -> str:
         """
         Convert a markdown file to Google Docs.
-        
+
         Args:
             markdown_file: Path to the markdown file
             doc_title: Optional title for the Google Doc
-            
+
         Returns:
             The Google Doc ID
         """
         # Authenticate
         self.authenticate()
-        
+
         # Read markdown file
         with open(markdown_file, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
-        
+
         # Parse markdown and extract mermaid diagrams
         blocks, mermaid_codes = self.parse_markdown(markdown_content)
-        
+
         # Render mermaid diagrams
         mermaid_images = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -495,19 +640,63 @@ class MarkdownToGoogleDocs:
                     mermaid_images.append(image_path)
                 else:
                     mermaid_images.append('')
-            
+
             # Create Google Doc
             if not doc_title:
                 doc_title = Path(markdown_file).stem
-            
+
             doc_id = self.create_google_doc(doc_title, blocks, mermaid_images)
-        
+
         # Generate URL
         doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
         print(f"\nDocument created successfully!")
         print(f"URL: {doc_url}")
-        
+
         return doc_id
+
+    def convert_directory(self, directory: str) -> List[str]:
+        """
+        Convert all markdown files in a directory to Google Docs.
+        Does not process subdirectories.
+
+        Args:
+            directory: Path to the directory containing markdown files
+
+        Returns:
+            List of created Google Doc IDs
+        """
+        # Authenticate once for all conversions
+        self.authenticate()
+
+        # Get all .md files in the directory (not subdirectories)
+        directory_path = Path(directory)
+        if not directory_path.is_dir():
+            raise ValueError(f"'{directory}' is not a valid directory")
+
+        md_files = list(directory_path.glob('*.md'))
+
+        if not md_files:
+            print(f"No markdown files found in '{directory}'")
+            return []
+
+        print(f"Found {len(md_files)} markdown file(s) in '{directory}'")
+
+        doc_ids = []
+        for md_file in md_files:
+            try:
+                print(f"\nProcessing: {md_file.name}")
+                # Use filename without .md extension as the document title
+                doc_title = md_file.stem
+                doc_id = self.convert(str(md_file), doc_title)
+                doc_ids.append(doc_id)
+            except Exception as e:
+                print(f"Error processing {md_file.name}: {e}")
+                continue
+
+        print(f"\n{'='*60}")
+        print(f"Completed: {len(doc_ids)} of {len(md_files)} files converted successfully")
+
+        return doc_ids
 
 
 def main():
@@ -516,12 +705,12 @@ def main():
         description='Convert Markdown with Mermaid diagrams to Google Docs'
     )
     parser.add_argument(
-        'markdown_file',
-        help='Path to the markdown file to convert'
+        'path',
+        help='Path to a markdown file or directory containing markdown files'
     )
     parser.add_argument(
         '--title',
-        help='Title for the Google Doc (default: filename without extension)'
+        help='Title for the Google Doc (default: filename without extension). Only used for single files.'
     )
     parser.add_argument(
         '--credentials',
@@ -533,24 +722,29 @@ def main():
         action='store_true',
         help='Use local mermaid CLI instead of API for rendering'
     )
-    
+
     args = parser.parse_args()
-    
-    # Check if markdown file exists
-    if not os.path.exists(args.markdown_file):
-        print(f"Error: File '{args.markdown_file}' not found")
+
+    # Check if path exists
+    if not os.path.exists(args.path):
+        print(f"Error: Path '{args.path}' not found")
         return 1
-    
+
     # Create converter
     converter = MarkdownToGoogleDocs(credentials_file=args.credentials)
-    
+
     # Set rendering method
     if args.use_cli:
         converter.mermaid_renderer = MermaidRenderer(use_api=False)
-    
+
     try:
-        # Convert the file
-        converter.convert(args.markdown_file, args.title)
+        # Check if path is a directory or file
+        if os.path.isdir(args.path):
+            # Convert all markdown files in the directory
+            converter.convert_directory(args.path)
+        else:
+            # Convert single file
+            converter.convert(args.path, args.title)
         return 0
     except Exception as e:
         print(f"Error: {e}")
