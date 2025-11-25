@@ -195,24 +195,46 @@ class MarkdownToGoogleDocs:
     
     def parse_markdown(self, markdown_text: str) -> Tuple[List[Dict], List[str]]:
         """
-        Parse markdown and extract mermaid diagrams.
-        
+        Parse markdown and extract mermaid diagrams and tables.
+
         Args:
             markdown_text: The markdown content
-            
+
         Returns:
             Tuple of (content blocks, mermaid codes)
         """
         blocks = []
         mermaid_diagrams = []
-        
+
+        # First, extract tables before splitting by code blocks
+        # Tables are identified by pipes - match all consecutive lines with pipes
+        table_pattern = r'(\|.+\|(?:\n\|.+\|)+)'
+
+        # Replace tables with placeholders
+        table_matches = []
+        def replace_table(match):
+            table_matches.append(match.group(0))
+            return f'<<<TABLE_{len(table_matches) - 1}>>>'
+
+        markdown_with_placeholders = re.sub(table_pattern, replace_table, markdown_text)
+
         # Split by code blocks
-        parts = re.split(r'```(\w+)?\n(.*?)```', markdown_text, flags=re.DOTALL)
-        
+        parts = re.split(r'```(\w+)?\n(.*?)```', markdown_with_placeholders, flags=re.DOTALL)
+
         for i, part in enumerate(parts):
             if i % 3 == 0:  # Regular markdown content
                 if part.strip():
-                    blocks.append({'type': 'markdown', 'content': part})
+                    # Check for table placeholders
+                    table_placeholder_pattern = r'<<<TABLE_(\d+)>>>'
+                    sub_parts = re.split(table_placeholder_pattern, part)
+
+                    for j, sub_part in enumerate(sub_parts):
+                        if j % 2 == 0:  # Regular markdown
+                            if sub_part.strip():
+                                blocks.append({'type': 'markdown', 'content': sub_part})
+                        else:  # Table index
+                            table_idx = int(sub_part)
+                            blocks.append({'type': 'table', 'content': table_matches[table_idx]})
             elif i % 3 == 1:  # Code block language
                 lang = part
             else:  # Code block content
@@ -222,7 +244,7 @@ class MarkdownToGoogleDocs:
                 else:
                     # Other code blocks
                     blocks.append({'type': 'code', 'language': lang or '', 'content': part})
-        
+
         return blocks, mermaid_diagrams
     
     def upload_image_to_drive(self, image_path: str, drive_service) -> str:
@@ -406,6 +428,21 @@ class MarkdownToGoogleDocs:
 
                 current_index += len(code_text)
 
+            elif block['type'] == 'table':
+                # Insert table - we'll populate it after all inserts are done
+                table_data = self._parse_table(block['content'])
+                if table_data:
+                    # Store table info for insertion and population later
+                    format_requests.append({
+                        'table_data': table_data,
+                        'insert_index': current_index,
+                        'is_table': True
+                    })
+
+                    # Reserve space - tables are complex, we'll handle sizing after creation
+                    # Just move index forward to account for table
+                    current_index += 1  # Placeholder, actual size calculated after insert
+
             elif block['type'] == 'mermaid':
                 # Insert mermaid diagram image
                 image_path = mermaid_images[block['index']]
@@ -435,23 +472,192 @@ class MarkdownToGoogleDocs:
                     })
                     current_index += 2
 
-        # Execute requests in two batches:
-        # Batch 1: Insert all content
+        # Execute requests in batches:
+        # Separate table requests from regular requests
+        table_requests = [r for r in format_requests if r.get('is_table')]
+        text_format_requests = [r for r in format_requests if not r.get('is_table')]
+
+        # Batch 1: Insert all non-table content first
         if insert_requests:
             docs_service.documents().batchUpdate(
                 documentId=doc_id,
                 body={'requests': insert_requests}
             ).execute()
 
-        # Batch 2: Apply formatting (after all text is inserted)
-        if format_requests:
+        # Batch 2: Apply text formatting
+        if text_format_requests:
             docs_service.documents().batchUpdate(
                 documentId=doc_id,
-                body={'requests': format_requests}
+                body={'requests': text_format_requests}
             ).execute()
+
+        # Batch 3: Insert and populate tables one at a time
+        for table_info in table_requests:
+            self._insert_and_populate_table(docs_service, doc_id, table_info['table_data'], table_info['insert_index'])
         
         return doc_id
     
+    def _parse_table(self, table_text: str) -> List[List[str]]:
+        """
+        Parse a markdown table into a 2D array.
+
+        Args:
+            table_text: Markdown table text
+
+        Returns:
+            2D list of cell values
+        """
+        lines = [line.strip() for line in table_text.strip().split('\n') if line.strip()]
+
+        if len(lines) < 2:
+            return []
+
+        # Parse header and clean markdown formatting
+        header_cells = [cell.strip() for cell in lines[0].split('|') if cell.strip()]
+        clean_header = []
+        for cell in header_cells:
+            cell = re.sub(r'\*\*(.+?)\*\*', r'\1', cell)  # Remove bold
+            cell = re.sub(r'`(.+?)`', r'\1', cell)  # Remove code
+            clean_header.append(cell)
+
+        # Skip separator line (line 1)
+
+        # Parse data rows
+        data_rows = [clean_header]  # Include cleaned header as first row
+        for line in lines[2:]:
+            cells = [cell.strip() for cell in line.split('|') if cell.strip()]
+            if cells:
+                # Clean markdown formatting
+                clean_cells = []
+                for cell in cells:
+                    cell = re.sub(r'\*\*(.+?)\*\*', r'\1', cell)  # Remove bold
+                    cell = re.sub(r'`(.+?)`', r'\1', cell)  # Remove code
+                    clean_cells.append(cell)
+                data_rows.append(clean_cells)
+
+        return data_rows
+
+    def _insert_and_populate_table(self, docs_service, doc_id: str, table_data: List[List[str]], insert_index: int):
+        """
+        Insert a table and populate it with data and formatting.
+
+        Args:
+            docs_service: Google Docs API service
+            doc_id: Document ID
+            table_data: 2D array of cell values
+            insert_index: Index where table should be inserted
+        """
+        print(f"Inserting table with {len(table_data)} rows and {len(table_data[0])} columns at index {insert_index}")
+
+        # Step 1: Insert the table
+        insert_request = {
+            'insertTable': {
+                'rows': len(table_data),
+                'columns': len(table_data[0]) if table_data else 0,
+                'location': {'index': insert_index}
+            }
+        }
+
+        docs_service.documents().batchUpdate(
+            documentId=doc_id,
+            body={'requests': [insert_request]}
+        ).execute()
+
+        # Step 2: Get the document to find the newly created table
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+
+        # Find the table we just inserted - look for ANY table since there might only be one
+        table = None
+        table_start_index = None
+        all_tables = []
+        for element in doc.get('body', {}).get('content', []):
+            if 'table' in element:
+                elem_start = element.get('startIndex')
+                all_tables.append(elem_start)
+                # Find table at or near our insert index (expanded search range)
+                if elem_start >= insert_index - 5 and elem_start <= insert_index + 50:
+                    table = element['table']
+                    table_start_index = elem_start
+                    print(f"Found table at index {elem_start}")
+                    break
+
+        if not table:
+            print(f"ERROR: Could not find table near index {insert_index}. All tables at: {all_tables}")
+            return
+
+        print(f"Table has {len(table['tableRows'])} rows")
+
+        # Step 3: Populate cells and format
+        requests = []
+        for row_idx, row_data in enumerate(table_data):
+            print(f"Processing row {row_idx} with {len(row_data)} cells")
+            if row_idx < len(table['tableRows']):
+                table_row = table['tableRows'][row_idx]
+                for col_idx, cell_value in enumerate(row_data):
+                    if col_idx < len(table_row['tableCells']):
+                        cell = table_row['tableCells'][col_idx]
+                        cell_start = cell['startIndex']
+                        cell_end = cell.get('endIndex')
+
+                        print(f"Cell [{row_idx},{col_idx}] starts at {cell_start}, ends at {cell_end}, value: {cell_value[:20]}")
+
+                        # Insert text into cell
+                        requests.append({
+                            'insertText': {
+                                'location': {'index': cell_start},
+                                'text': cell_value
+                            }
+                        })
+
+                        # Format header row (bold + background)
+                        if row_idx == 0:
+                            requests.append({
+                                'updateTextStyle': {
+                                    'range': {
+                                        'startIndex': cell_start,
+                                        'endIndex': cell_start + len(cell_value)
+                                    },
+                                    'textStyle': {
+                                        'bold': True
+                                    },
+                                    'fields': 'bold'
+                                }
+                            })
+
+                            requests.append({
+                                'updateTableCellStyle': {
+                                    'tableCellLocation': {
+                                        'tableStartLocation': {'index': table_start_index},
+                                        'rowIndex': row_idx,
+                                        'columnIndex': col_idx
+                                    },
+                                    'tableCellStyle': {
+                                        'backgroundColor': {
+                                            'color': {
+                                                'rgbColor': {
+                                                    'red': 0.85,
+                                                    'green': 0.89,
+                                                    'blue': 0.95
+                                                }
+                                            }
+                                        }
+                                    },
+                                    'fields': 'backgroundColor'
+                                }
+                            })
+
+        # Execute all table population requests
+        print(f"Executing {len(requests)} table population requests")
+        if requests:
+            try:
+                docs_service.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={'requests': requests}
+                ).execute()
+                print("Table populated successfully")
+            except Exception as e:
+                print(f"ERROR populating table: {e}")
+
     def _parse_markdown_with_formatting(self, markdown_text: str, start_index: int, format_requests: list):
         """
         Parse markdown and generate formatting requests for Google Docs.

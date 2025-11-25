@@ -5,6 +5,9 @@ token.pickle
 credentials.json
 token.json
 
+# Output directories
+docx/
+
 # Python
 __pycache__/
 *.py[cod]
