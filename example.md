@@ -182,17 +182,12 @@ pie title Development Time Distribution
 
 | Field | Type | Required | Example | Description |
 |-------|------|----------|---------|-------------|
-| timestamp | ISO-8601 | Yes | `2025-11-15T10:30:00.123Z` | Log entry timestamp with milliseconds |
 | level | string | Yes | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
-| agent_id | string | Yes | `tasking:test_12345:1` | Agent identifier |
-| test_id | string | Yes | `test_123` | Test identifier |
-| correlation_id | string | No | `correlation_abc` | Correlation ID for related events |
 | event | string | Yes | `task_assigned` | Event type identifier |
 | task_id | string | No | `task_001` | Task identifier (when applicable) |
-| agent_assigned | string | No | `page_test:test_12345:1` | Assigned agent (for assignment events) |
 | priority | integer | No | `85` | Task priority (for task events) |
 | assignment_score | float | No | `0.92` | Assignment score (for assignment events) |
-| message | string | Yes | `Task assigned to agent with high capability match` | Human-readable message |
+| message | string | Yes | `test` | Human-readable message |
 
 ## Conclusion
 
