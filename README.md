@@ -1,20 +1,22 @@
-# Markdown to Google Docs Converter with Mermaid Support
+# Markdown to Google Docs/DOCX Converter with Mermaid Support
 
-This Python script converts Markdown documents containing Mermaid diagrams into Google Docs, with the diagrams rendered as embedded images.
+Convert Markdown documents containing Mermaid diagrams to either Google Docs or DOCX format, with diagrams rendered as embedded images.
 
 ## Features
 
-- Converts Markdown content to Google Docs format
+- **Two output formats**: Google Docs (cloud) or DOCX (local file)
 - Automatically renders Mermaid diagrams as images
-- Uploads images to Google Drive and embeds them in the document
-- Preserves code blocks and basic markdown formatting
+- Supports markdown tables with proper formatting
+- Professional code block formatting (grey background, black borders, Courier New font)
+- Preserves markdown formatting (headers, bold, italic, lists)
 - Supports both API-based and CLI-based Mermaid rendering
+- Batch conversion of entire directories
 
 ## Prerequisites
 
 1. **Python 3.7+** installed on your system
-2. **Google Cloud Project** with Google Docs and Drive APIs enabled
-3. **OAuth 2.0 credentials** for desktop application
+2. **For Google Docs output**: Google Cloud Project with Google Docs and Drive APIs enabled + OAuth 2.0 credentials
+3. **For DOCX output**: No additional setup required (works offline)
 
 ## Setup Instructions
 
@@ -46,28 +48,47 @@ npm install -g @mermaid-js/mermaid-cli
 
 ## Usage
 
-### Basic Usage
+### DOCX Conversion (Recommended for Transfer)
+
+Convert to DOCX format - creates local Word document that can be uploaded to Google Docs:
 
 ```bash
-python markdown_to_gdocs.py your_document.md
+# Single file
+python md2docx.py example.md
+
+# Entire directory
+python md2docx.py /path/to/markdown/files/
+
+# Custom output location
+python md2docx.py example.md --output /custom/path/output.docx
 ```
 
-### With Custom Title
+Output files are saved to `docx/` subdirectory by default.
+
+**Workflow for transferring to Google Docs:**
+1. Run `python md2docx.py your_file.md` on home computer
+2. Transfer the DOCX file (USB/email/cloud) to work computer
+3. In Google Docs: File → Open → Upload the DOCX file
+
+### Google Docs Conversion (Direct Upload)
+
+Convert directly to Google Docs (requires Google API setup):
 
 ```bash
-python markdown_to_gdocs.py your_document.md --title "My Custom Document Title"
-```
+# Single file
+python md2gdocs.py example.md
 
-### Using Local Mermaid CLI
+# With custom title
+python md2gdocs.py example.md --title "My Custom Document Title"
 
-```bash
-python markdown_to_gdocs.py your_document.md --use-cli
-```
+# Entire directory
+python md2gdocs.py /path/to/markdown/files/
 
-### With Custom Credentials File
+# With custom credentials file
+python md2gdocs.py example.md --credentials /path/to/credentials.json
 
-```bash
-python markdown_to_gdocs.py your_document.md --credentials /path/to/credentials.json
+# Using local Mermaid CLI instead of API
+python md2gdocs.py example.md --use-cli
 ```
 
 ## Example Markdown File
@@ -120,34 +141,48 @@ def process_data(data):
 ```
 ```
 
+Here's a sample table:
+
+| Field | Type | Required | Example | Description |
+|-------|------|----------|---------|-------------|
+| name | string | Yes | `"John"` | User's name |
+| age | integer | No | `25` | User's age |
+```
+
 Then convert it:
 
 ```bash
-python markdown_to_gdocs.py example.md --title "System Architecture Document"
+# To DOCX
+python md2docx.py example.md
+
+# To Google Docs
+python md2gdocs.py example.md --title "System Architecture Document"
 ```
 
 ## How It Works
 
-1. **Parse Markdown**: The script parses your markdown file and identifies:
-   - Regular markdown content (headers, text, lists, etc.)
-   - Code blocks with syntax highlighting
-   - Mermaid diagram blocks
+### md2docx.py (DOCX Converter)
 
-2. **Render Mermaid Diagrams**: Each Mermaid diagram is rendered to a PNG image using either:
-   - The mermaid.ink API (default, no installation required)
-   - Local Mermaid CLI (if `--use-cli` flag is used)
+1. **Parse Markdown**: Identifies regular content, code blocks, tables, and Mermaid diagrams
+2. **Render Mermaid Diagrams**: Converts diagrams to PNG images via mermaid.ink API
+3. **Create DOCX**: Uses python-docx to create a Word document with:
+   - Formatted headers, bold, italic, lists
+   - Professional code blocks (grey background, black borders, Courier New font)
+   - Properly formatted tables with header styling
+   - Embedded diagram images
+4. **Output**: Saves to `docx/` subdirectory
 
-3. **Create Google Doc**: The script:
-   - Creates a new Google Doc with your specified title
-   - Uploads rendered diagram images to Google Drive
-   - Inserts content with proper formatting
-   - Embeds diagram images in the appropriate positions
+### md2gdocs.py (Google Docs Converter)
 
-4. **Output**: Returns a URL to the newly created Google Doc
+1. **Parse Markdown**: Same as above
+2. **Render Mermaid Diagrams**: Same as above
+3. **Upload Images**: Uploads rendered diagrams to Google Drive
+4. **Create Google Doc**: Uses Google Docs API to create document with formatted content
+5. **Output**: Returns URL to the newly created Google Doc
 
-## First-Time Authentication
+## First-Time Authentication (Google Docs only)
 
-On first run, the script will:
+On first run of `md2gdocs.py`, the script will:
 1. Open your default web browser
 2. Ask you to sign in to your Google account
 3. Request permissions to:
@@ -173,17 +208,42 @@ On first run, the script will:
 - Ensure your Google account has permission to create documents and upload files
 - Try deleting `token.json` and re-authenticating
 
+## Supported Markdown Features
+
+✅ **Supported:**
+- Headers (H1-H6)
+- Bold, italic, inline code
+- Bulleted and numbered lists
+- Code blocks with language specification
+- Mermaid diagrams (all types)
+- Tables with header formatting
+- Nested lists
+
+❌ **Not Supported:**
+- Footnotes
+- Task lists
+- HTML blocks
+- Some extended markdown syntax
+
 ## Limitations
 
-- The script converts basic markdown formatting but may not support all markdown extensions
 - Complex Mermaid diagrams might timeout when using the API
-- Image sizing in Google Docs is set to default values (can be modified in the code)
+- Image sizing is set to default values (6 inches width for DOCX, 400x300pt for Google Docs)
+- Google Docs table formatting may differ slightly from DOCX
+
+## Files and Output
+
+- **Input**: `.md` markdown files
+- **Output (DOCX)**: `docx/` subdirectory (created automatically)
+- **Output (Google Docs)**: Creates docs in your Google Drive
+- **Ignored files**: See `.gitignore` for excluded files (credentials, output dirs, Python cache)
 
 ## Security Notes
 
-- `credentials.json`: Keep this file secure and don't commit it to version control
-- `token.json`: Created after first authentication, also keep secure
-- The script makes uploaded images publicly viewable (can be changed in the code)
+- `credentials.json`: Keep this file secure and don't commit it to version control (Google Docs only)
+- `token.json`: Created after first authentication, also keep secure (Google Docs only)
+- DOCX files are created locally and contain no sensitive information
+- Mermaid.ink API is used for diagram rendering (diagrams are sent externally)
 
 ## License
 
